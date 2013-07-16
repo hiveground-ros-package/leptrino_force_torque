@@ -1,0 +1,6 @@
+<launch>
+  <node pkg="leptrino_force_torque" type="leptrino_force_torque" name="leptrino_force_torque" output="screen">
+  	<param name="com_port" value="/dev/ttyUSB0" />  	  	
+  </node>
+</launch>  
+ 
