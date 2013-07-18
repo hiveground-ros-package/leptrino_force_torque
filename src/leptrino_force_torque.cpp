@@ -209,14 +209,14 @@ int main(int argc, char** argv)
         ROS_DEBUG_THROTTLE(0.1, "%d,%d,%d,%d,%d,%d", stForce->ssForce[0], stForce->ssForce[1], stForce->ssForce[2],
                            stForce->ssForce[3], stForce->ssForce[4], stForce->ssForce[5]);
 
-        geometry_msgs::WrenchStamped msg;
-        msg.header.stamp = ros::Time::now();
-        msg.wrench.force.x = stForce->ssForce[0] * conversion_factor[0];
-        msg.wrench.force.y = stForce->ssForce[1] * conversion_factor[1];
-        msg.wrench.force.z = stForce->ssForce[2] * conversion_factor[2];
-        msg.wrench.torque.x = stForce->ssForce[3] * conversion_factor[3];
-        msg.wrench.torque.y = stForce->ssForce[4] * conversion_factor[4];
-        msg.wrench.torque.z = stForce->ssForce[5] * conversion_factor[5];
+        geometry_msgs::WrenchStampedPtr msg(new geometry_msgs::WrenchStamped);
+        msg->header.stamp = ros::Time::now();
+        msg->wrench.force.x = stForce->ssForce[0] * conversion_factor[0];
+        msg->wrench.force.y = stForce->ssForce[1] * conversion_factor[1];
+        msg->wrench.force.z = stForce->ssForce[2] * conversion_factor[2];
+        msg->wrench.torque.x = stForce->ssForce[3] * conversion_factor[3];
+        msg->wrench.torque.y = stForce->ssForce[4] * conversion_factor[4];
+        msg->wrench.torque.z = stForce->ssForce[5] * conversion_factor[5];
         force_torque_pub.publish(msg);
       }
     }
