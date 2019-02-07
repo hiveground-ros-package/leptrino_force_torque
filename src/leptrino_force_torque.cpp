@@ -108,6 +108,9 @@ int main(int argc, char** argv)
     g_rate = 1200;
   }
 
+  std::string frame_id = "leptrino";
+  nh_private.getParam("frame_id", frame_id);
+
   int i, l = 0, rt = 0;
   ST_RES_HEAD *stCmdHead;
   ST_R_DATA_GET_F *stForce;
@@ -211,6 +214,7 @@ int main(int argc, char** argv)
 
         geometry_msgs::WrenchStampedPtr msg(new geometry_msgs::WrenchStamped);
         msg->header.stamp = ros::Time::now();
+        msg->header.frame_id = frame_id;
         msg->wrench.force.x = stForce->ssForce[0] * conversion_factor[0];
         msg->wrench.force.y = stForce->ssForce[1] * conversion_factor[1];
         msg->wrench.force.z = stForce->ssForce[2] * conversion_factor[2];
@@ -377,4 +381,3 @@ void SerialStop(void)
 
   SendData(SendBuff, len);
 }
-
