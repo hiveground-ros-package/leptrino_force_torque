@@ -107,6 +107,7 @@ int main(int argc, char** argv)
     ROS_WARN("Rate is not defined, using maximum 1.2 kHz");
     g_rate = 1200;
   }
+  ros::Rate rate(g_rate);
 
   std::string frame_id = "leptrino";
   nh_private.getParam("frame_id", frame_id);
@@ -147,6 +148,10 @@ int main(int argc, char** argv)
         break;
       }
     }
+    else
+    {
+      rate.sleep();
+    }
   }
 
   GetLimit();
@@ -169,6 +174,10 @@ int main(int argc, char** argv)
         break;
       }
     }
+    else
+    {
+      rate.sleep();
+    }
   }
 
   ros::Publisher force_torque_pub = nh_private.advertise<geometry_msgs::WrenchStamped>("force_torque", 1);
@@ -183,8 +192,6 @@ int main(int argc, char** argv)
   int dt_count = 0;
   ros::Time start_time;
 #endif
-
-  ros::Rate rate(g_rate);
 
   while (ros::ok())
   {
