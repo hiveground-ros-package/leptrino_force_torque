@@ -95,15 +95,14 @@ int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);
   rclcpp::Node::SharedPtr node = rclcpp::Node::make_shared("leptrino");
-  rclcpp::Node::SharedPtr nh_private = rclcpp::Node::make_shared("~");
 
-  if (!nh_private->get_parameter("com_port", g_com_port))
+  if (!node->get_parameter("com_port", g_com_port))
   {
     RCLCPP_WARN(node->get_logger(), "Port is not defined, trying /dev/ttyUSB0");
     g_com_port = "/dev/ttyUSB0";
   }
 
-  if (!nh_private->get_parameter("rate", g_rate))
+  if (!node->get_parameter("rate", g_rate))
   {
     RCLCPP_WARN(node->get_logger(), "Rate is not defined, using maximum 1.2 kHz");
     g_rate = 1200;
@@ -111,7 +110,7 @@ int main(int argc, char** argv)
   rclcpp::Rate rate(g_rate);
 
   std::string frame_id = "leptrino";
-  nh_private->get_parameter("frame_id", frame_id);
+  node->get_parameter("frame_id", frame_id);
 
   int rt = 0;
   //ST_RES_HEAD *stCmdHead;
