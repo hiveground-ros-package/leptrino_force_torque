@@ -30,4 +30,9 @@ add_executable(${PROJECT_NAME}
 
 ament_target_dependencies(${PROJECT_NAME} rclcpp geometry_msgs)
 
+install(TARGETS
+  ${PROJECT_NAME}
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()
