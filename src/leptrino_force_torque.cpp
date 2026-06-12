@@ -45,6 +45,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <chrono>
+#include <cstdint>
+#include <iomanip>
+#include <sstream>
+#include <string>
 
 #include <leptrino/pCommon.h>
 #include <leptrino/rs_comm.h>
@@ -76,6 +81,9 @@ void GetProductInfo(rclcpp::Logger logger);
 void GetLimit(rclcpp::Logger logger);
 void SerialStart(rclcpp::Logger logger);
 void SerialStop(rclcpp::Logger logger);
+void DrainReceiveQueue(void);
+bool ReceiveResponse(const rclcpp::Node::SharedPtr& node, UCHAR expected_cmd, int min_len,
+                     UCHAR *buffer, int *length);
 
 // =============================================================================
 //  モジュール変数定義 Defining module variables
@@ -89,96 +97,124 @@ double conversion_factor[FN_Num];
 std::string g_com_port;
 int g_rate;
 
+namespace
+{
+constexpr int kResponseHeaderSize = 4;
+constexpr int kProductInfoResponseSize = 0x20;
+constexpr int kLimitResponseSize = 0x1c;
+constexpr int kForceDataResponseSize = 0x14;
+constexpr int kResponseTimeoutMs = 1000;
+
+std::string FixedAsciiString(const UCHAR *data, size_t size)
+{
+  size_t len = 0;
+  while (len < size && data[len] != '\0')
+  {
+    ++len;
+  }
+  while (len > 0 && data[len - 1] == ' ')
+  {
+    --len;
+  }
+  return std::string(reinterpret_cast<const char *>(data), len);
+}
+
+float ReadLittleEndianFloat(const UCHAR *data)
+{
+  static_assert(sizeof(float) == sizeof(uint32_t), "float must be 32-bit");
+  const uint32_t raw = static_cast<uint32_t>(data[0]) |
+                       (static_cast<uint32_t>(data[1]) << 8) |
+                       (static_cast<uint32_t>(data[2]) << 16) |
+                       (static_cast<uint32_t>(data[3]) << 24);
+  float value;
+  memcpy(&value, &raw, sizeof(value));
+  return value;
+}
+
+SSHORT ReadLittleEndianInt16(const UCHAR *data)
+{
+  const uint16_t raw = static_cast<uint16_t>(data[0]) |
+                       (static_cast<uint16_t>(data[1]) << 8);
+  return static_cast<SSHORT>(static_cast<int16_t>(raw));
+}
+
+std::string FrameToHex(const UCHAR *data, int length)
+{
+  std::ostringstream stream;
+  stream << std::hex << std::setfill('0');
+  for (int i = 0; i < length; ++i)
+  {
+    if (i > 0)
+    {
+      stream << ' ';
+    }
+    stream << std::setw(2) << static_cast<unsigned int>(data[i]);
+  }
+  return stream.str();
+}
+}  // namespace
+
 #define TEST_TIME 0
 
 int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);
   rclcpp::Node::SharedPtr node = rclcpp::Node::make_shared("leptrino");
-  rclcpp::Node::SharedPtr nh_private = rclcpp::Node::make_shared("~");
 
-  if (!nh_private->get_parameter("com_port", g_com_port))
-  {
-    RCLCPP_WARN(node->get_logger(), "Port is not defined, trying /dev/ttyUSB0");
-    g_com_port = "/dev/ttyUSB0";
-  }
+  node->declare_parameter<std::string>("com_port", "/dev/ttyUSB0");
+  node->declare_parameter<int>("rate", 1200);
+  node->declare_parameter<std::string>("frame_id", "leptrino");
 
-  if (!nh_private->get_parameter("rate", g_rate))
-  {
-    RCLCPP_WARN(node->get_logger(), "Rate is not defined, using maximum 1.2 kHz");
-    g_rate = 1200;
-  }
+  node->get_parameter("com_port", g_com_port);
+  node->get_parameter("rate", g_rate);
   rclcpp::Rate rate(g_rate);
 
-  std::string frame_id = "leptrino";
-  nh_private->get_parameter("frame_id", frame_id);
+  std::string frame_id;
+  node->get_parameter("frame_id", frame_id);
 
   int rt = 0;
-  //ST_RES_HEAD *stCmdHead;
-  ST_R_DATA_GET_F *stForce;
-  ST_R_GET_INF *stGetInfo;
-  ST_R_LEP_GET_LIMIT* stGetLimit;
+  int response_length = 0;
 
   App_Init();
 
   if (gSys.com_ok == NG)
   {
     RCLCPP_ERROR(node->get_logger(), "%s open failed\n", g_com_port.c_str());
-    exit(0);
+    rclcpp::shutdown();
+    return 1;
   }
+
+  // Stop and drain first in case the sensor was left in continuous-output mode.
+  SerialStop(node->get_logger());
+  DrainReceiveQueue();
 
   // 製品情報取得
   GetProductInfo(node->get_logger());
-  while (rclcpp::ok())
+  if (!ReceiveResponse(node, CMD_GET_INF, kProductInfoResponseSize, CommRcvBuff, &response_length))
   {
-    Comm_Rcv();
-    if (Comm_CheckRcv() != 0)
-    { //受信データ有
-      CommRcvBuff[0] = 0;
-
-      rt = Comm_GetRcvData(CommRcvBuff);
-      if (rt > 0)
-      {
-        stGetInfo = (ST_R_GET_INF *)CommRcvBuff;
-        stGetInfo->scFVer[F_VER_SIZE] = 0;
-        RCLCPP_INFO(node->get_logger(), "Version: %s", stGetInfo->scFVer);
-        stGetInfo->scSerial[SERIAL_SIZE] = 0;
-        RCLCPP_INFO(node->get_logger(), "SerialNo: %s", stGetInfo->scSerial);
-        stGetInfo->scPName[P_NAME_SIZE] = 0;
-        RCLCPP_INFO(node->get_logger(), "Type: %s", stGetInfo->scPName);
-        break;
-      }
-    }
-    else
-    {
-      rate.sleep();
-    }
+    App_Close(node->get_logger());
+    rclcpp::shutdown();
+    return 1;
   }
+  RCLCPP_INFO(node->get_logger(), "Version: %s",
+              FixedAsciiString(&CommRcvBuff[4 + P_NAME_SIZE + SERIAL_SIZE], F_VER_SIZE).c_str());
+  RCLCPP_INFO(node->get_logger(), "SerialNo: %s",
+              FixedAsciiString(&CommRcvBuff[4 + P_NAME_SIZE], SERIAL_SIZE).c_str());
+  RCLCPP_INFO(node->get_logger(), "Type: %s",
+              FixedAsciiString(&CommRcvBuff[4], P_NAME_SIZE).c_str());
 
   GetLimit(node->get_logger());
-  while (rclcpp::ok())
+  if (!ReceiveResponse(node, CMD_GET_LIMIT, kLimitResponseSize, CommRcvBuff, &response_length))
   {
-    Comm_Rcv();
-    if (Comm_CheckRcv() != 0)
-    { //受信データ有
-      CommRcvBuff[0] = 0;
-
-      rt = Comm_GetRcvData(CommRcvBuff);
-      if (rt > 0)
-      {
-        stGetLimit = (ST_R_LEP_GET_LIMIT *)CommRcvBuff;
-        for (int i = 0; i < FN_Num; i++)
-        {
-          RCLCPP_INFO(node->get_logger(), "\tLimit[%d]: %f", i, stGetLimit->fLimit[i]);
-          conversion_factor[i] = stGetLimit->fLimit[i] * 1e-4;
-        }
-        break;
-      }
-    }
-    else
-    {
-      rate.sleep();
-    }
+    App_Close(node->get_logger());
+    rclcpp::shutdown();
+    return 1;
+  }
+  for (int i = 0; i < FN_Num; i++)
+  {
+    const float limit = ReadLittleEndianFloat(&CommRcvBuff[4 + i * sizeof(float)]);
+    RCLCPP_INFO(node->get_logger(), "\tLimit[%d]: %f", i, limit);
+    conversion_factor[i] = limit * 1e-4;
   }
 
   rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr force_torque_pub = node->create_publisher<geometry_msgs::msg::WrenchStamped>("force_torque", 1);
@@ -216,24 +252,35 @@ int main(int argc, char** argv)
       rt = Comm_GetRcvData(CommRcvBuff);
       if (rt > 0)
       {
-        stForce = (ST_R_DATA_GET_F *)CommRcvBuff;
+        if (rt < kForceDataResponseSize || CommRcvBuff[2] != CMD_DATA_START || CommRcvBuff[3] != RES_ERR_OK)
+        {
+          RCLCPP_DEBUG(node->get_logger(), "Ignore frame: %s", FrameToHex(CommRcvBuff, rt).c_str());
+          continue;
+        }
+
+        SSHORT force[FN_Num];
+        for (int i = 0; i < FN_Num; ++i)
+        {
+          force[i] = ReadLittleEndianInt16(&CommRcvBuff[4 + i * sizeof(SSHORT)]);
+        }
+
         auto& clk = *node->get_clock();
         RCLCPP_DEBUG_THROTTLE(node->get_logger(),
                               clk,
                               0.1,
                               "%d,%d,%d,%d,%d,%d",
-                              stForce->ssForce[0], stForce->ssForce[1], stForce->ssForce[2], stForce->ssForce[3], stForce->ssForce[4], stForce->ssForce[5]
+                              force[0], force[1], force[2], force[3], force[4], force[5]
                              );
 
         auto msg = geometry_msgs::msg::WrenchStamped();
         msg.header.stamp = node->now();
         msg.header.frame_id = frame_id;
-        msg.wrench.force.x = stForce->ssForce[0] * conversion_factor[0];
-        msg.wrench.force.y = stForce->ssForce[1] * conversion_factor[1];
-        msg.wrench.force.z = stForce->ssForce[2] * conversion_factor[2];
-        msg.wrench.torque.x = stForce->ssForce[3] * conversion_factor[3];
-        msg.wrench.torque.y = stForce->ssForce[4] * conversion_factor[4];
-        msg.wrench.torque.z = stForce->ssForce[5] * conversion_factor[5];
+        msg.wrench.force.x = force[0] * conversion_factor[0];
+        msg.wrench.force.y = force[1] * conversion_factor[1];
+        msg.wrench.force.z = force[2] * conversion_factor[2];
+        msg.wrench.torque.x = force[3] * conversion_factor[3];
+        msg.wrench.torque.y = force[4] * conversion_factor[4];
+        msg.wrench.torque.z = force[5] * conversion_factor[5];
         force_torque_pub->publish(msg);
       }
     }
@@ -242,7 +289,6 @@ int main(int argc, char** argv)
       rate.sleep();
     }
 
-    rclcpp::spin(node);
   } //while
 
   SerialStop(node->get_logger());
@@ -285,6 +331,83 @@ void App_Close(rclcpp::Logger logger)
   {
     Comm_Close();
   }
+}
+
+void DrainReceiveQueue(void)
+{
+  UCHAR discard[256];
+
+  for (int i = 0; i < 20; ++i)
+  {
+    Comm_Rcv();
+    while (Comm_CheckRcv() != 0)
+    {
+      memset(discard, 0, sizeof(discard));
+      Comm_GetRcvData(discard);
+    }
+    usleep(10000);
+  }
+}
+
+bool ReceiveResponse(const rclcpp::Node::SharedPtr& node, UCHAR expected_cmd, int min_len,
+                     UCHAR *buffer, int *length)
+{
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kResponseTimeoutMs);
+
+  while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline)
+  {
+    Comm_Rcv();
+    while (Comm_CheckRcv() != 0)
+    {
+      memset(buffer, 0, sizeof(CommRcvBuff));
+      const int frame_len = Comm_GetRcvData(buffer);
+      if (frame_len <= 0)
+      {
+        continue;
+      }
+
+      RCLCPP_DEBUG(node->get_logger(), "RX frame: %s", FrameToHex(buffer, frame_len).c_str());
+
+      if (frame_len < kResponseHeaderSize)
+      {
+        RCLCPP_WARN(node->get_logger(), "Ignore short response: %s",
+                    FrameToHex(buffer, frame_len).c_str());
+        continue;
+      }
+      if (buffer[2] != expected_cmd)
+      {
+        RCLCPP_DEBUG(node->get_logger(),
+                     "Ignore response command 0x%02X while waiting for 0x%02X",
+                     static_cast<unsigned int>(buffer[2]),
+                     static_cast<unsigned int>(expected_cmd));
+        continue;
+      }
+      if (buffer[3] != RES_ERR_OK)
+      {
+        RCLCPP_ERROR(node->get_logger(), "Response 0x%02X returned error 0x%02X",
+                     static_cast<unsigned int>(expected_cmd),
+                     static_cast<unsigned int>(buffer[3]));
+        return false;
+      }
+      if (frame_len < min_len)
+      {
+        RCLCPP_ERROR(node->get_logger(),
+                     "Response 0x%02X is too short: %d bytes, expected at least %d",
+                     static_cast<unsigned int>(expected_cmd), frame_len, min_len);
+        return false;
+      }
+
+      *length = frame_len;
+      return true;
+    }
+
+    usleep(1000);
+  }
+
+  RCLCPP_ERROR(node->get_logger(), "Timed out waiting for response 0x%02X",
+               static_cast<unsigned int>(expected_cmd));
+  return false;
 }
 
 /*********************************************************************************

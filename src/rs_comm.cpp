@@ -209,17 +209,22 @@ int Comm_SendData(UCHAR *buff, int l)
 // ----------------------------------------------------------------------------------
 int Comm_GetRcvData(UCHAR *buff)
 {
-  int l = rcv_buff[p_rd][0];
-
   if (p_wr == p_rd)
     return 0;
+
+  int l = rcv_buff[p_rd][0];
+  if (l <= 0 || l > MAX_LENGTH)
+  {
+    p_rd++;
+    if (p_rd >= MAX_BUFF)
+      p_rd = 0;
+    return 0;
+  }
 
   memcpy(buff, &rcv_buff[p_rd][0], l);
   p_rd++;
   if (p_rd >= MAX_BUFF)
     p_rd = 0;
-
-  l = strlen((char*)buff);
 
   return l;
 }
@@ -232,7 +237,7 @@ int Comm_GetRcvData(UCHAR *buff)
 // ----------------------------------------------------------------------------------
 int Comm_CheckRcv()
 {
-  return p_wr - p_rd;
+  return p_wr != p_rd;
 }
 
 // ----------------------------------------------------------------------------------
